@@ -3,13 +3,10 @@ package com.google.cloud.teleport.v2.templates;
 import com.google.api.services.bigquery.model.TableRow;
 import com.google.common.base.MoreObjects;
 import java.io.Serializable;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
+import java.util.*;
 import org.apache.beam.sdk.transforms.Combine;
 
-public class SchemaFnCombiner extends Combine.CombineFn<TableRow, SchemaFnCombiner.SchemaAccumulator, HashMap<String, HashMap<String, Long>>> {
+public class SchemaFnCombiner extends Combine.CombineFn<TableRow, SchemaFnCombiner.SchemaAccumulator, TreeMap<String, HashMap<String, Long>>> {
 
     public static final String FIELD_STRING = "STRING";
     public static final String FIELD_INTEGER = "INTEGER";
@@ -21,7 +18,7 @@ public class SchemaFnCombiner extends Combine.CombineFn<TableRow, SchemaFnCombin
     public static class SchemaAccumulator implements Serializable {
 
         //Can implement more data quality info with counters
-        HashMap<String, HashMap<String, Long>> schemaStatus = new HashMap<>();
+        TreeMap<String, HashMap<String, Long>> schemaStatus = new TreeMap<>();
         int count = 0;
     }
 
@@ -73,7 +70,10 @@ public class SchemaFnCombiner extends Combine.CombineFn<TableRow, SchemaFnCombin
                 System.out.println("Array Type Class:" + o.getClass());
                 if (o instanceof LinkedHashMap) {
                     incrementTypeStatus(keyStatsMap, FIELD_ARRAY + ":" + FIELD_RECORD);
-                    getSchemaField(path, key, o, schemaAccumulator);
+                    for(String arrayStructKey: ((LinkedHashMap<String, Object>) o).keySet())
+                    {
+                        getSchemaField(currentPath, arrayStructKey, o, schemaAccumulator);
+                    }
                 } else if (o instanceof String) {
                     incrementTypeStatus(keyStatsMap, FIELD_ARRAY + ":" + FIELD_STRING);
                 } else if (o instanceof Integer) {
@@ -90,7 +90,7 @@ public class SchemaFnCombiner extends Combine.CombineFn<TableRow, SchemaFnCombin
      * Adds the given input value to the given accumulator, returning the new accumulator value.
      *
      * @param mutableAccumulator may be modified and returned for efficiency
-     * @param kvTableRow         should not be mutated
+     * @param tableRow         should not be mutated
      */
     @Override
     public SchemaAccumulator addInput(SchemaAccumulator mutableAccumulator, TableRow tableRow) {
@@ -100,6 +100,8 @@ public class SchemaFnCombiner extends Combine.CombineFn<TableRow, SchemaFnCombin
 //                System.out.println("Key: " + key + " Value: " + tableRow.get(key)  + " Class: "+ tableRow.get(key).getClass());
             getSchemaField(null, key, tableRow.get(key), mutableAccumulator);
         }
+
+        mutableAccumulator.count += 1;
 
         return mutableAccumulator;
     }
@@ -133,9 +135,9 @@ public class SchemaFnCombiner extends Combine.CombineFn<TableRow, SchemaFnCombin
     }
 
     @Override
-    public HashMap<String, HashMap<String, Long>> extractOutput(SchemaAccumulator schemaAccumulator) {
+    public TreeMap<String, HashMap<String, Long>> extractOutput(SchemaAccumulator schemaAccumulator) {
         // Extract Table Schema from all Accumulators
-        System.out.println(schemaAccumulator.schemaStatus.toString());
+        System.out.println("Total:" + schemaAccumulator.count + "\nSchema: \n" + schemaAccumulator.schemaStatus.toString());
         return schemaAccumulator.schemaStatus;
     }
 }

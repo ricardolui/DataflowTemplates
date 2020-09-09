@@ -16,36 +16,41 @@
 
 package com.google.cloud.teleport.v2.templates;
 
-import com.google.api.services.bigquery.model.TableFieldSchema;
-import com.google.api.services.bigquery.model.TableRow;
-import com.google.api.services.bigquery.model.TableSchema;
+import com.google.api.client.http.HttpRequestInitializer;
+import com.google.api.services.bigquery.Bigquery;
+import com.google.api.services.bigquery.model.*;
+import com.google.auth.Credentials;
+import com.google.auth.http.HttpCredentialsAdapter;
+import com.google.cloud.hadoop.util.ChainingHttpRequestInitializer;
 import com.google.cloud.teleport.v2.coders.FailsafeElementCoder;
 import com.google.cloud.teleport.v2.transforms.BigQueryConverters.FailsafeJsonToTableRow;
 import com.google.cloud.teleport.v2.values.FailsafeElement;
-import com.google.common.base.MoreObjects;
+import java.io.IOException;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
+import java.util.HashMap;
 import java.util.List;
+import java.util.TreeMap;
 import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.PipelineResult;
 import org.apache.beam.sdk.coders.CoderRegistry;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
+import org.apache.beam.sdk.extensions.gcp.auth.NullCredentialInitializer;
+import org.apache.beam.sdk.extensions.gcp.util.RetryHttpRequestInitializer;
+import org.apache.beam.sdk.extensions.gcp.util.Transport;
 import org.apache.beam.sdk.io.TextIO;
+import org.apache.beam.sdk.io.gcp.bigquery.BigQueryOptions;
 import org.apache.beam.sdk.io.gcp.bigquery.TableRowJsonCoder;
 import org.apache.beam.sdk.options.Default;
 import org.apache.beam.sdk.options.Description;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.options.PipelineOptionsFactory;
 import org.apache.beam.sdk.options.Validation.Required;
-import org.apache.beam.sdk.state.StateSpec;
-import org.apache.beam.sdk.state.StateSpecs;
-import org.apache.beam.sdk.state.ValueState;
 import org.apache.beam.sdk.transforms.Combine;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.ParDo;
-import org.apache.beam.sdk.values.KV;
 import org.apache.beam.sdk.values.PCollectionTuple;
 import org.apache.beam.sdk.values.TupleTag;
+import org.apache.beam.vendor.guava.v26_0_jre.com.google.common.collect.ImmutableList;
 
 
 /**
@@ -134,7 +139,7 @@ public class BigQuerySchemaFromJson {
      * The {@link BigQuerySchemaFromJsonOptions} class provides the custom execution options passed by the executor at the
      * command-line.
      */
-    public interface BigQuerySchemaFromJsonOptions extends PipelineOptions {
+    public interface BigQuerySchemaFromJsonOptions extends PipelineOptions, BigQueryOptions {
 
 
         @Description("Maximum number of lines to Test, defaults to unlimited (0).")
@@ -172,6 +177,116 @@ public class BigQuerySchemaFromJson {
         run(options);
     }
 
+    public static String getRawTypeHierarchy(List<String> arrayTypes) {
+        //Default Type to Return by priority
+        String returnType = SchemaFnCombiner.FIELD_STRING;
+        if (arrayTypes.contains(SchemaFnCombiner.FIELD_RECORD)) {
+            returnType = SchemaFnCombiner.FIELD_RECORD;
+        } else if (arrayTypes.contains(SchemaFnCombiner.FIELD_STRING)) {
+            returnType = SchemaFnCombiner.FIELD_STRING;
+        } else if (arrayTypes.contains(SchemaFnCombiner.FIELD_DOUBLE)) {
+            returnType = SchemaFnCombiner.FIELD_DOUBLE;
+        } else if (arrayTypes.contains(SchemaFnCombiner.FIELD_INTEGER)) {
+            returnType = SchemaFnCombiner.FIELD_INTEGER;
+        }
+        return returnType;
+    }
+
+
+    public static TableFieldSchema generateFieldSchema(String name, HashMap<String, Long> potentialTypes) {
+        TableFieldSchema field = new TableFieldSchema();
+        field.setName(name);
+
+        List<String> allTypes = new ArrayList<>();
+        List<String> arrayTypes = new ArrayList<>();
+
+        boolean hasArray = false;
+        for (String types : potentialTypes.keySet()) {
+            if (types.contains(SchemaFnCombiner.FIELD_ARRAY)) {
+                String arrayType = types.substring(types.indexOf(":") + 1);
+                System.out.println("Repeated Type: " + arrayType);
+                arrayTypes.add(arrayType);
+                hasArray = true;
+            }
+            else
+            {
+                allTypes.add(types);
+            }
+        }
+        if (hasArray) {
+            field.setMode("REPEATED");
+            field.setType(getRawTypeHierarchy(arrayTypes));
+        }
+        else
+        {
+            field.setType(getRawTypeHierarchy(allTypes));
+        }
+
+        return field;
+    }
+
+    public static void generateSchema(TableSchema tableSchema, TableFieldSchema parentFieldSchema, TreeMap<String, HashMap<String, Long>> map) {
+
+        TreeMap<String, TableFieldSchema> generatedMap = new TreeMap<>();
+        List<String> processedFields = new ArrayList<>();
+
+        for (String key : map.keySet()) {
+            //Easy basic field
+            if (!key.contains(".")) {
+                TableFieldSchema genField = generateFieldSchema(key, map.get(key));
+                generatedMap.put(key, genField);
+                if (parentFieldSchema == null) {
+                    //Initialize Fields if null
+                    if (tableSchema.getFields() == null) {
+                        tableSchema.setFields(new ArrayList<>());
+                    }
+                    tableSchema.getFields().add(genField);
+                } else {
+                    //Initialize Fields if null
+                    if (parentFieldSchema.getFields() == null) {
+                        parentFieldSchema.setFields(new ArrayList<>());
+                    }
+                    parentFieldSchema.getFields().add(genField);
+                }
+                processedFields.add(key);
+            }
+            //this can be array or struct
+            else {
+                //if field has not been processed
+                if (!processedFields.contains(key)) {
+                    //root
+                    processedFields.add(key);
+                    String prefix = key.substring(0, key.indexOf("."));
+                    System.out.println("Prefix: " + prefix);
+                    TreeMap<String, HashMap<String, Long>> internalMap = new TreeMap<>();
+                    for (String keyInternal : map.keySet()) {
+                        //get all prefix
+                        if (!keyInternal.equals(prefix) && keyInternal.contains(prefix)
+                                && keyInternal.contains(".") && keyInternal.substring(0, keyInternal.indexOf(".")).equals(prefix)) {
+
+                            String nextToken = keyInternal.substring(keyInternal.indexOf(".") + 1);
+                            internalMap.put(nextToken, map.get(keyInternal));
+                            processedFields.add(keyInternal);
+                        }
+                    }
+                    generateSchema(tableSchema, generatedMap.get(prefix), internalMap);
+                }
+            }
+        }
+
+    }
+
+    private static HttpRequestInitializer chainHttpRequestInitializer(
+            Credentials credential, HttpRequestInitializer httpRequestInitializer) {
+        if (credential == null) {
+            return new ChainingHttpRequestInitializer(
+                    new NullCredentialInitializer(), httpRequestInitializer);
+        } else {
+            return new ChainingHttpRequestInitializer(
+                    new HttpCredentialsAdapter(credential), httpRequestInitializer);
+        }
+    }
+
     /**
      * Runs the pipeline to completion with the specified options. This method does not wait until the
      * pipeline is finished before returning. Invoke {@code result.waitUntilFinish()} on the result
@@ -187,8 +302,6 @@ public class BigQuerySchemaFromJson {
         Pipeline pipeline = Pipeline.create(options);
         CoderRegistry coderRegistry = pipeline.getCoderRegistry();
         coderRegistry.registerCoderForType(FAILSAFE_ELEMENT_CODER.getEncodedTypeDescriptor(), FAILSAFE_ELEMENT_CODER);
-//        coderRegistry.registerCoderForType(TableSchemaCoder.of().getEncodedTypeDescriptor(), TableSchemaCoder.of());
-
         /*
          * Steps:
          *  1) Read File to Load to Generate Schema To Update
@@ -214,99 +327,47 @@ public class BigQuerySchemaFromJson {
 
         jsonToTableRowOutput.get(TRANSFORM_OUT).setCoder(TableRowJsonCoder.of());
         jsonToTableRowOutput.get(DEADLETTER_OUT).setCoder(FAILSAFE_ELEMENT_CODER);
-        jsonToTableRowOutput.get(TRANSFORM_OUT).apply(Combine.globally(new SchemaFnCombiner()));
+        jsonToTableRowOutput.get(TRANSFORM_OUT).apply(Combine.globally(new SchemaFnCombiner()))
+                .apply("GenerateSchemaApplyTable", ParDo.of(new DoFn<TreeMap<String, HashMap<String, Long>>, Void>() {
+
+
+                    @ProcessElement
+                    public void processElement(ProcessContext context) {
+                        TableSchema tableSchema = new TableSchema();
+                        BigQuerySchemaFromJsonOptions options = context.getPipelineOptions().as(BigQuerySchemaFromJsonOptions.class);
+                        TreeMap<String, HashMap<String, Long>> map = context.element();
+                        generateSchema(tableSchema, null, map);
+                        System.out.printf("TableSchema" + tableSchema);
+                        RetryHttpRequestInitializer httpRequestInitializer =
+                                new RetryHttpRequestInitializer(ImmutableList.of(404));
+
+                        Bigquery bigquery = new Bigquery.Builder(Transport.getTransport(), Transport.getJsonFactory(), chainHttpRequestInitializer(
+                                options.getGcpCredential(),
+                                // Do not log 404. It clutters the output and is possibly even required by the
+                                // caller.
+                                httpRequestInitializer))
+                                .setApplicationName(options.getAppName())
+                                .setGoogleClientRequestInitializer(options.getGoogleApiTrace()).build();
+
+                        TableReference tableRef = new TableReference();
+                        tableRef.setTableId("json02");
+                        tableRef.setDatasetId("dynamicJson");
+                        tableRef.setProjectId("dataml-latam");
+                        Table table = new Table().setTableReference(tableRef).setSchema(tableSchema).setDescription("Dynamic Json Table");
+                        try {
+                            bigquery.tables().insert("dataml-latam", "dynamicJson", table).execute();
+
+                            System.out.println("\nTable created successfully");
+                        } catch (IOException e) {
+                            System.out.println("Table was not created. \n" + e.toString());
+                            e.printStackTrace();
+                        }
+                    }
+
+                }));
 
 
         return pipeline.run();
-    }
-
-    /**
-     * The {@link ProcessSchema} class process the schema.
-     */
-    static class ProcessSchema extends DoFn<KV<Integer, TableRow>, TableRow> {
-
-        @StateId("count")
-        private final StateSpec<ValueState<Long>> countState = StateSpecs.value();
-
-        @StateId("tableSchema")
-        private final StateSpec<ValueState<TableSchema>> tableSchema = StateSpecs.value(TableSchemaCoder.of());
-
-
-        private Long maxLinesToProcess;
-
-
-        ProcessSchema(Long maxLinesToProcess) {
-            this.maxLinesToProcess = maxLinesToProcess;
-        }
-
-        public TableFieldSchema getSchemaField(String path, String key, Object value) {
-            TableFieldSchema schemaField = new TableFieldSchema();
-            String currentPath = MoreObjects.firstNonNull(path, "");
-            if (currentPath != "") {
-                currentPath += "." + key;
-            } else {
-                currentPath = key;
-            }
-
-            if (value instanceof String) {
-                System.out.println("Path: " + currentPath + " Value: STRING");
-                schemaField.setType("STRING");
-            } else if (value instanceof Integer) {
-                System.out.println("Path: " + currentPath + " Value: INTEGER");
-                schemaField.setType("INTEGER");
-            } else if (value instanceof Double) {
-                System.out.println("Path: " + currentPath + "Value: DOUBLE");
-                schemaField.setMode("DOUBLE");
-            } else if (value instanceof LinkedHashMap) {
-                System.out.println("Path: " + currentPath + " Value: STRUCT (RECORD)");
-                schemaField.setType("RECORD");
-                LinkedHashMap<String, Object> linkedHashMap = (LinkedHashMap<String, Object>) value;
-                for (String linkedKey : ((LinkedHashMap<String, Object>) value).keySet()) {
-                    getSchemaField(currentPath, linkedKey, linkedHashMap.get(linkedKey));
-                }
-            } else if (value instanceof ArrayList) {
-
-                schemaField.setMode("REPEATED");
-                List<Object> arrayList = (ArrayList<Object>) value;
-                if (arrayList.size() > 0) {
-                    Object o = arrayList.get(0);
-                    System.out.println("Array Type Class:" + o.getClass());
-                    if (o instanceof LinkedHashMap) {
-                        System.out.println("Path: " + currentPath + " Value: REPEATED (ARRAY)-STRUCT");
-                        getSchemaField(path, key, o);
-                    } else if (o instanceof String) {
-                        System.out.println("Path: " + currentPath + " Value: REPEATED (ARRAY)-STRING");
-                    } else if (o instanceof Integer) {
-                        System.out.println("Path: " + currentPath + " Value: REPEATED (ARRAY)-INTEGER");
-                    } else if (o instanceof Double) {
-                        System.out.println("Path: " + currentPath + " Value: REPEATED (ARRAY)-DOUBLE");
-                    }
-                }
-            }
-
-            return schemaField;
-        }
-
-        @ProcessElement
-        public void processElement(ProcessContext c,
-                                   @StateId("count") ValueState<Long> countState,
-                                   @StateId("tableSchema") ValueState<TableSchema> tableSchemaState) {
-
-            TableSchema tableSchema = MoreObjects.firstNonNull(tableSchemaState.read(), new TableSchema());
-            Long count = MoreObjects.firstNonNull(countState.read(), new Long(0));
-            TableRow tableRow = c.element().getValue();
-            for (String key : tableRow.keySet()) {
-//                System.out.println("Key: " + key + " Value: " + tableRow.get(key)  + " Class: "+ tableRow.get(key).getClass());
-                getSchemaField(null, key, tableRow.get(key));
-            }
-            count++;
-//            System.out.printf("New Count: " + count + "\n");
-            System.out.printf("--------------------------------------------------\n");
-            countState.write(count);
-
-
-        }
-
     }
 
 
