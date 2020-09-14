@@ -18,7 +18,12 @@ package com.google.cloud.teleport.v2.templates;
 
 import com.google.api.client.http.HttpRequestInitializer;
 import com.google.api.services.bigquery.Bigquery;
-import com.google.api.services.bigquery.model.*;
+import com.google.api.services.bigquery.model.Table;
+import com.google.api.services.bigquery.model.TableFieldSchema;
+import com.google.api.services.bigquery.model.TableList;
+import com.google.api.services.bigquery.model.TableReference;
+import com.google.api.services.bigquery.model.TableRow;
+import com.google.api.services.bigquery.model.TableSchema;
 import com.google.auth.Credentials;
 import com.google.auth.http.HttpCredentialsAdapter;
 import com.google.cloud.hadoop.util.ChainingHttpRequestInitializer;
@@ -159,6 +164,14 @@ public class BigQuerySchemaFromJson {
         String getBigQueryTableToMutate();
 
         void setBigQueryTableToMutate(String bigQueryTableToMutate);
+
+
+        @Description("BigQuery Dataset")
+        String getBigQueryDataset();
+
+        void setBigQueryDataset(String bigQueryDataset);
+
+
     }
 
     /**
@@ -177,6 +190,12 @@ public class BigQuerySchemaFromJson {
         run(options);
     }
 
+    /**
+     * Get Raw Type based on an hierarchy.
+     *
+     * @param arrayTypes
+     * @return
+     */
     public static String getRawTypeHierarchy(List<String> arrayTypes) {
         //Default Type to Return by priority
         String returnType = SchemaFnCombiner.FIELD_STRING;
@@ -193,6 +212,13 @@ public class BigQuerySchemaFromJson {
     }
 
 
+    /**
+     * Generate BigQuery Field Schema.
+     *
+     * @param name
+     * @param potentialTypes
+     * @return
+     */
     public static TableFieldSchema generateFieldSchema(String name, HashMap<String, Long> potentialTypes) {
         TableFieldSchema field = new TableFieldSchema();
         field.setName(name);
@@ -207,24 +233,27 @@ public class BigQuerySchemaFromJson {
                 System.out.println("Repeated Type: " + arrayType);
                 arrayTypes.add(arrayType);
                 hasArray = true;
-            }
-            else
-            {
+            } else {
                 allTypes.add(types);
             }
         }
         if (hasArray) {
             field.setMode("REPEATED");
             field.setType(getRawTypeHierarchy(arrayTypes));
-        }
-        else
-        {
+        } else {
             field.setType(getRawTypeHierarchy(allTypes));
         }
 
         return field;
     }
 
+    /**
+     * This method generates BigQuery schema.
+     *
+     * @param tableSchema
+     * @param parentFieldSchema
+     * @param map
+     */
     public static void generateSchema(TableSchema tableSchema, TableFieldSchema parentFieldSchema, TreeMap<String, HashMap<String, Long>> map) {
 
         TreeMap<String, TableFieldSchema> generatedMap = new TreeMap<>();
@@ -273,9 +302,15 @@ public class BigQuerySchemaFromJson {
                 }
             }
         }
-
     }
 
+    /**
+     * Create chain Request initializer.
+     *
+     * @param credential
+     * @param httpRequestInitializer
+     * @return
+     */
     private static HttpRequestInitializer chainHttpRequestInitializer(
             Credentials credential, HttpRequestInitializer httpRequestInitializer) {
         if (credential == null) {
@@ -349,19 +384,43 @@ public class BigQuerySchemaFromJson {
                                 .setApplicationName(options.getAppName())
                                 .setGoogleClientRequestInitializer(options.getGoogleApiTrace()).build();
 
-                        TableReference tableRef = new TableReference();
-                        tableRef.setTableId("json02");
-                        tableRef.setDatasetId("dynamicJson");
-                        tableRef.setProjectId("dataml-latam");
-                        Table table = new Table().setTableReference(tableRef).setSchema(tableSchema).setDescription("Dynamic Json Table");
-                        try {
-                            bigquery.tables().insert("dataml-latam", "dynamicJson", table).execute();
 
-                            System.out.println("\nTable created successfully");
+                        try {
+                            TableReference tableRef = new TableReference();
+                            tableRef.setTableId(options.getBigQueryTableToMutate());
+                            tableRef.setDatasetId(options.getBigQueryDataset());
+                            tableRef.setProjectId(options.getProject());
+                            Table table = new Table().setTableReference(tableRef).setSchema(tableSchema).setDescription("Dynamic Json Table");
+
+                            boolean tableExists = false;
+                            //Try to list the tables
+                            TableList listedTables = bigquery.tables().list(options.getProject(), options.getBigQueryDataset()).execute();
+                            for(TableList.Tables listTable: listedTables.getTables())
+                            {
+                                if(listTable.getTableReference().getTableId().equals(options.getBigQueryTableToMutate()))
+                                {
+                                    tableExists = true;
+                                    break;
+                                }
+                            }
+                            //Try to update the schema
+                            if(tableExists)
+                            {
+                                bigquery.tables().update(options.getProject(), options.getBigQueryDataset(), options.getBigQueryTableToMutate(), table);
+                                System.out.println("\nTable updated successfully");
+                            }
+                            else {
+                                bigquery.tables().insert(options.getProject(), options.getBigQueryDataset(), table).execute();
+                                System.out.println("\nTable created successfully");
+                            }
+
                         } catch (IOException e) {
-                            System.out.println("Table was not created. \n" + e.toString());
+                            System.err.println("\nFail to create or update table");
                             e.printStackTrace();
+
                         }
+
+
                     }
 
                 }));

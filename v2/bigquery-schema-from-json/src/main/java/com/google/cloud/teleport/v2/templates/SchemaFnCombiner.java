@@ -3,7 +3,11 @@ package com.google.cloud.teleport.v2.templates;
 import com.google.api.services.bigquery.model.TableRow;
 import com.google.common.base.MoreObjects;
 import java.io.Serializable;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.TreeMap;
 import org.apache.beam.sdk.transforms.Combine;
 
 public class SchemaFnCombiner extends Combine.CombineFn<TableRow, SchemaFnCombiner.SchemaAccumulator, TreeMap<String, HashMap<String, Long>>> {
@@ -13,6 +17,7 @@ public class SchemaFnCombiner extends Combine.CombineFn<TableRow, SchemaFnCombin
     public static final String FIELD_DOUBLE = "DOUBLE";
     public static final String FIELD_RECORD = "RECORD";
     public static final String FIELD_ARRAY = "ARRAY";
+
 
 
     public static class SchemaAccumulator implements Serializable {
@@ -70,8 +75,7 @@ public class SchemaFnCombiner extends Combine.CombineFn<TableRow, SchemaFnCombin
                 System.out.println("Array Type Class:" + o.getClass());
                 if (o instanceof LinkedHashMap) {
                     incrementTypeStatus(keyStatsMap, FIELD_ARRAY + ":" + FIELD_RECORD);
-                    for(String arrayStructKey: ((LinkedHashMap<String, Object>) o).keySet())
-                    {
+                    for (String arrayStructKey : ((LinkedHashMap<String, Object>) o).keySet()) {
                         getSchemaField(currentPath, arrayStructKey, o, schemaAccumulator);
                     }
                 } else if (o instanceof String) {
@@ -90,7 +94,7 @@ public class SchemaFnCombiner extends Combine.CombineFn<TableRow, SchemaFnCombin
      * Adds the given input value to the given accumulator, returning the new accumulator value.
      *
      * @param mutableAccumulator may be modified and returned for efficiency
-     * @param tableRow         should not be mutated
+     * @param tableRow           should not be mutated
      */
     @Override
     public SchemaAccumulator addInput(SchemaAccumulator mutableAccumulator, TableRow tableRow) {
