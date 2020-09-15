@@ -79,6 +79,7 @@
     <commons-csv.version>1.5</commons-csv.version>
     <commons-text.version>1.6</commons-text.version>
     <google.cloud.core>1.92.2</google.cloud.core>
+    <google.cloud.pubsub>1.92.0</google.cloud.pubsub>
     <grpc.version>1.13.1</grpc.version>
     <google-storage-api.version>v1-rev20181013-1.27.0</google-storage-api.version>
     <mvn-target-dir>${basedir}/target</mvn-target-dir>
@@ -220,6 +221,13 @@
       <groupId>com.google.http-client</groupId>
       <artifactId>google-http-client-apache-v2</artifactId>
       <version>${apache-http-client-v2}</version>
+    </dependency>
+
+    <!-- Dependency to call PubSub APIs   <-->
+    <dependency>
+      <groupId>com.google.cloud</groupId>
+      <artifactId>google-cloud-pubsub</artifactId>
+      <version>${google.cloud.pubsub}</version>
     </dependency>
 
     <!-- Test -->
