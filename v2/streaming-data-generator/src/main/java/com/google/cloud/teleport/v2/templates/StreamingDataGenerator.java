@@ -20,8 +20,11 @@ import com.github.vincentrussell.json.datagenerator.JsonDataGenerator;
 import com.github.vincentrussell.json.datagenerator.JsonDataGeneratorException;
 import com.github.vincentrussell.json.datagenerator.impl.JsonDataGeneratorImpl;
 import com.google.cloud.tasks.v2.CloudTasksClient;
+import com.google.cloud.tasks.v2.CreateQueueRequest;
 import com.google.cloud.tasks.v2.HttpMethod;
 import com.google.cloud.tasks.v2.HttpRequest;
+import com.google.cloud.tasks.v2.LocationName;
+import com.google.cloud.tasks.v2.Queue;
 import com.google.cloud.tasks.v2.QueueName;
 import com.google.cloud.tasks.v2.Task;
 import com.google.protobuf.ByteString;
@@ -228,11 +231,11 @@ public class StreamingDataGenerator {
             this.queuePrefix = queuePrefix;
             this.url = queueEndpoint;
             this.schemaLocation = schemaLocation;
-            this.shards = qps / QPS_PER_SHARD;
+            this.shards = Math.max(1L, qps / QPS_PER_SHARD);
+            System.out.println("p: " + this.project + " loc: " + this.location + " pref: " + this.queuePrefix);
         }
 
-        public CloudTasksGeneratorFn(String schemaLocation)
-        {
+        public CloudTasksGeneratorFn(String schemaLocation) {
             this.schemaLocation = schemaLocation;
             this.shards = 1L;
             this.url = "";
@@ -262,7 +265,12 @@ public class StreamingDataGenerator {
                 this.cloudTasksClient = client;
                 // Construct the fully qualified queue name.
                 for (long i = 0; i < shards; i++) {
-                    this.queuePath.add(QueueName.of(this.project, this.location, this.queuePrefix + i).toString());
+
+                    LocationName parent = LocationName.of("dataml-latam", "us-central1");
+                    Queue queue = Queue.newBuilder().setName("d1queueshard" + i).build();
+                    CreateQueueRequest request = CreateQueueRequest.newBuilder().setParent(parent.toString()).setQueue(queue).build();
+                    Queue response = client.createQueue(request);
+                    this.queuePath.add(response.getName());
                 }
             }
         }
