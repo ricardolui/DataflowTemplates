@@ -32,7 +32,6 @@ import org.apache.beam.sdk.Pipeline;
 import org.apache.beam.sdk.PipelineResult;
 import org.apache.beam.sdk.coders.KvCoder;
 import org.apache.beam.sdk.coders.StringUtf8Coder;
-import org.apache.beam.sdk.extensions.gcp.options.GcpOptions;
 import org.apache.beam.sdk.io.AvroIO;
 import org.apache.beam.sdk.io.FileBasedSink;
 import org.apache.beam.sdk.io.fs.ResourceId;
@@ -107,130 +106,18 @@ public class PubsubToAvroPartitioned {
     private static final Logger LOG = LoggerFactory.getLogger(PubsubToAvroPartitioned.class);
 
     /**
-     * Main entry point for executing the pipeline.
-     *
-     * @param args The command-line arguments to the pipeline.
-     */
-    public static void main(String[] args) {
-
-        Options options = PipelineOptionsFactory.fromArgs(args).withValidation().as(Options.class);
-        options.setStreaming(true);
-
-        run(options);
-    }
-
-    public static List<String> listTopicOrSubscriptions(boolean isTopic, String currentProject, String derivedName) {
-
-        List<String> listToRead = new ArrayList<String>();
-
-        if (isTopic) {
-            try (TopicAdminClient topicAdminClient = TopicAdminClient.create()) {
-                ProjectName projectName = ProjectName.of(currentProject);
-                for (Topic topic :
-                        topicAdminClient.listTopics(projectName).iterateAll()) {
-
-                    LOG.debug(topic.getName());
-
-                    if (topic.getName().contains(derivedName)) {
-                        listToRead.add(topic.getName());
-                        LOG.info("Added topic: " + topic.getName());
-                    }
-                }
-                LOG.info("Listed all the subscriptions in the project.");
-            } catch (IOException e) {
-                LOG.error("Exception listing subscriptions in project" + e.getMessage());
-                e.printStackTrace();
-            }
-        } else {
-            try (SubscriptionAdminClient subscriptionAdminClient = SubscriptionAdminClient.create()) {
-                ProjectName projectName = ProjectName.of(currentProject);
-                for (Subscription subscription :
-                        subscriptionAdminClient.listSubscriptions(projectName).iterateAll()) {
-
-                    LOG.debug(subscription.getName());
-
-                    if (subscription.getName().contains(derivedName)) {
-                        listToRead.add(subscription.getName());
-                        LOG.info("Added subs: " + subscription.getName());
-                    }
-                }
-                LOG.info("Listed all the subscriptions in the project.");
-            } catch (IOException e) {
-                LOG.error("Exception listing subscriptions in project" + e.getMessage());
-                e.printStackTrace();
-            }
-        }
-
-        return listToRead;
-    }
-
-    /**
-     * Runs the pipeline with the supplied options.
-     *
-     * @param options The execution parameters to the pipeline.
-     * @return The result of the pipeline execution.
-     */
-    public static PipelineResult run(Options options) {
-        // Create the pipeline
-        Pipeline pipeline = Pipeline.create(options);
-
-        List<String> listTopicOrSubs = listTopicOrSubscriptions(options.getReadFromTopic().get(), options.getProject(), options.getDerivationName().get());
-
-        if (listTopicOrSubs.size() == 0) {
-            LOG.error("No Topics or Subscriptions");
-        }
-
-        List<PCollection<KV<String, PubsubMessage>>> listPCollections = new ArrayList<PCollection<KV<String, PubsubMessage>>>();
-
-        for (String subs : listTopicOrSubs) {
-
-            PCollection<KV<String, PubsubMessage>> readSubs;
-            if (options.getReadFromTopic().get()) {
-                readSubs = pipeline.apply("ReadPubSubSubscription", PubsubIO.readMessagesWithAttributes().fromTopic(subs))
-                        .apply("Map With Sub", WithKeys.of(input -> subs)).setCoder(KvCoder.of(StringUtf8Coder.of(), PubsubMessageWithAttributesCoder.of()));
-            } else {
-                readSubs = pipeline.apply("ReadPubSubSubscription", PubsubIO.readMessagesWithAttributes().fromSubscription(subs))
-                        .apply("Map With Sub", WithKeys.of(input -> subs)).setCoder(KvCoder.of(StringUtf8Coder.of(), PubsubMessageWithAttributesCoder.of()));
-            }
-
-            listPCollections.add(readSubs);
-        }
-
-
-        PCollectionList.of(listPCollections).apply(Flatten.<KV<String, PubsubMessage>>pCollections())
-                .apply("Map To Archive", ParDo.of(new PubsubMessageToKVArchiveDoFn()))
-                .apply(options.getWindowDuration() + " Window", Window.into(FixedWindows.of(DurationUtils.parseDuration(options.getWindowDuration()))))
-                .apply("Write File(s)",
-                        AvroIO.write(AvroPubsubMessageRecordPartitioned.class)
-                                .to(
-                                        new WindowedFilenamePolicy(
-                                                ValueProvider.StaticValueProvider.of(options.getOutputDirectory().get() + "year=YYYY/month=MM/day=DD/hour=HH/"),
-                                                options.getOutputFilenamePrefix(),
-                                                options.getOutputShardTemplate(),
-                                                options.getOutputFilenameSuffix()))
-                                .withTempDirectory(ValueProvider.NestedValueProvider.of(
-                                        options.getAvroTempDirectory(),
-                                        (SerializableFunction<String, ResourceId>) input ->
-                                                FileBasedSink.convertToFileResourceIfPossible(input)))
-                                /*.withTempDirectory(FileSystems.matchNewResource(
-                                    options.getAvroTempDirectory(),
-                                    Boolean.TRUE))
-                                    */
-                                .withWindowedWrites()
-                                .withNumShards(options.getNumShards()));
-
-
-        // Execute the pipeline and return the result.
-        return pipeline.run();
-    }
-
-
-    /**
      * Options supported by the pipeline.
      *
      * <p>Inherits standard configuration options.
      */
-    public interface Options extends PipelineOptions, StreamingOptions, GcpOptions {
+    public interface Options extends PipelineOptions, StreamingOptions {
+
+
+        @Description("Project with Topic or Subscription")
+        @Required
+        ValueProvider<String> getProjectId();
+
+        void setProjectId(ValueProvider<String> value);
 
 
         @Description("Read From Topic, if not, from subscription")
@@ -298,6 +185,124 @@ public class PubsubToAvroPartitioned {
         void setDerivationName(ValueProvider<String> derivationName);
 
 
+    }
+
+    /**
+     * Main entry point for executing the pipeline.
+     *
+     * @param args The command-line arguments to the pipeline.
+     */
+    public static void main(String[] args) {
+
+        Options options = PipelineOptionsFactory.fromArgs(args).withValidation().as(Options.class);
+        options.setStreaming(true);
+
+        run(options);
+    }
+
+    public static List<String> listTopicOrSubscriptions(boolean isTopic, String currentProject, String derivedName) {
+
+        List<String> listToRead = new ArrayList<String>();
+
+        if (isTopic) {
+            try (TopicAdminClient topicAdminClient = TopicAdminClient.create()) {
+                ProjectName projectName = ProjectName.of(currentProject);
+                for (Topic topic :
+                        topicAdminClient.listTopics(projectName).iterateAll()) {
+
+                    LOG.debug(topic.getName());
+
+                    if (topic.getName().contains(derivedName)) {
+                        listToRead.add(topic.getName());
+                        LOG.info("Added topic: " + topic.getName());
+                    }
+                }
+                LOG.info("Listed all the subscriptions in the project.");
+            } catch (IOException e) {
+                LOG.error("Exception listing subscriptions in project" + e.getMessage());
+                e.printStackTrace();
+            }
+        } else {
+            try (SubscriptionAdminClient subscriptionAdminClient = SubscriptionAdminClient.create()) {
+                ProjectName projectName = ProjectName.of(currentProject);
+                for (Subscription subscription :
+                        subscriptionAdminClient.listSubscriptions(projectName).iterateAll()) {
+
+                    LOG.debug(subscription.getName());
+
+                    if (subscription.getName().contains(derivedName)) {
+                        listToRead.add(subscription.getName());
+                        LOG.info("Added subs: " + subscription.getName());
+                    }
+                }
+                LOG.info("Listed all the subscriptions in the project.");
+            } catch (IOException e) {
+                LOG.error("Exception listing subscriptions in project" + e.getMessage());
+                e.printStackTrace();
+            }
+        }
+
+        return listToRead;
+    }
+
+    /**
+     * Runs the pipeline with the supplied options.
+     *
+     * @param options The execution parameters to the pipeline.
+     * @return The result of the pipeline execution.
+     */
+    public static PipelineResult run(Options options) {
+        // Create the pipeline
+        Pipeline pipeline = Pipeline.create(options);
+
+        List<String> listTopicOrSubs = listTopicOrSubscriptions(options.getReadFromTopic().get(), options.getProjectId().get(), options.getDerivationName().get());
+
+        if (listTopicOrSubs.size() == 0) {
+            LOG.error("No Topics or Subscriptions");
+        }
+
+        List<PCollection<KV<String, PubsubMessage>>> listPCollections = new ArrayList<PCollection<KV<String, PubsubMessage>>>();
+
+        for (String subs : listTopicOrSubs) {
+
+            PCollection<KV<String, PubsubMessage>> readSubs;
+            if (options.getReadFromTopic().get()) {
+                readSubs = pipeline.apply("ReadPubSubSubscription", PubsubIO.readMessagesWithAttributes().fromTopic(subs))
+                        .apply("Map With Sub", WithKeys.of(input -> subs)).setCoder(KvCoder.of(StringUtf8Coder.of(), PubsubMessageWithAttributesCoder.of()));
+            } else {
+                readSubs = pipeline.apply("ReadPubSubSubscription", PubsubIO.readMessagesWithAttributes().fromSubscription(subs))
+                        .apply("Map With Sub", WithKeys.of(input -> subs)).setCoder(KvCoder.of(StringUtf8Coder.of(), PubsubMessageWithAttributesCoder.of()));
+            }
+
+            listPCollections.add(readSubs);
+        }
+
+
+        PCollectionList.of(listPCollections).apply(Flatten.<KV<String, PubsubMessage>>pCollections())
+                .apply("Map To Archive", ParDo.of(new PubsubMessageToKVArchiveDoFn()))
+                .apply(options.getWindowDuration() + " Window", Window.into(FixedWindows.of(DurationUtils.parseDuration(options.getWindowDuration()))))
+                .apply("Write File(s)",
+                        AvroIO.write(AvroPubsubMessageRecordPartitioned.class)
+                                .to(
+                                        new WindowedFilenamePolicy(
+                                                ValueProvider.StaticValueProvider.of(options.getOutputDirectory().get() + "year=YYYY/month=MM/day=DD/hour=HH/"),
+                                                options.getOutputFilenamePrefix(),
+                                                options.getOutputShardTemplate(),
+                                                options.getOutputFilenameSuffix()))
+                                .withTempDirectory(ValueProvider.NestedValueProvider.of(
+                                        options.getAvroTempDirectory(),
+                                        (SerializableFunction<String, ResourceId>) input ->
+                                                FileBasedSink.convertToFileResourceIfPossible(input)))
+                                /*.withTempDirectory(FileSystems.matchNewResource(
+                                    options.getAvroTempDirectory(),
+                                    Boolean.TRUE))
+                                    */
+                                .withWindowedWrites()
+                                .withNumShards(options.getNumShards()));
+
+
+        // Execute the pipeline and return the result.
+        return pipeline.run();
     }
 
     /**
