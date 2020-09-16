@@ -185,6 +185,13 @@ public class PubsubToAvroPartitioned {
         void setDerivationName(ValueProvider<String> derivationName);
 
 
+        @Description("Label Key to extract the Derivation Name from")
+        ValueProvider<String> getLabelKey();
+
+        void setLabelKey(ValueProvider<String> labelKey);
+
+
+
     }
 
     /**
@@ -200,7 +207,7 @@ public class PubsubToAvroPartitioned {
         run(options);
     }
 
-    public static List<String> listTopicOrSubscriptions(boolean isTopic, String currentProject, String derivedName) {
+    public static List<String> listTopicOrSubscriptions(boolean isTopic, String currentProject, String derivedName, String labelKey) {
 
         List<String> listToRead = new ArrayList<String>();
 
@@ -212,23 +219,28 @@ public class PubsubToAvroPartitioned {
 
                     LOG.debug(topic.getName());
 
-                    if (topic.getName().contains(derivedName)) {
-                        listToRead.add(topic.getName());
-                        LOG.info("Added topic: " + topic.getName());
-                    }
-                    //Try to identify some labels with the naming also
-                    for(String topicLabel: topic.getLabelsMap().keySet())
+                    //Try to find topics based on the labels
+                    if(labelKey!=null)
                     {
-                        if(topicLabel.equals("namespace"))
+                        //Try to identify some labels with the naming also
+                        for(String topicLabel: topic.getLabelsMap().keySet())
                         {
-                            if(topic.getLabelsMap().get(topicLabel).contains(derivedName))
+                            if(topicLabel.equals(labelKey))
                             {
-                                listToRead.add(topic.getName());
-                                LOG.info("Added topic with Labels: " + topic.getName());
+                                if(topic.getLabelsMap().get(topicLabel).equals(derivedName))
+                                {
+                                    listToRead.add(topic.getName());
+                                    LOG.info("Added topic with LabelKey: %s - label: %s - topic: %s  ", labelKey, derivedName, topic.getName());
+                                }
                             }
                         }
                     }
-
+                    else {
+                        if (topic.getName().contains(derivedName)) {
+                            listToRead.add(topic.getName());
+                            LOG.info("Added topic: " + topic.getName());
+                        }
+                    }
                 }
                 LOG.info("Listed all the subscriptions in the project.");
             } catch (IOException e) {
@@ -241,11 +253,30 @@ public class PubsubToAvroPartitioned {
                 for (Subscription subscription :
                         subscriptionAdminClient.listSubscriptions(projectName).iterateAll()) {
 
-                    LOG.debug(subscription.getName());
+//                    LOG.debug(subscription.getName());
 
-                    if (subscription.getName().contains(derivedName)) {
-                        listToRead.add(subscription.getName());
-                        LOG.info("Added subs: " + subscription.getName());
+                    //Try to find subs based on the labels
+                    if(labelKey!=null)
+                    {
+                        //Try to identify some labels with the naming also
+                        for(String label: subscription.getLabelsMap().keySet())
+                        {
+                            if(label.equals(labelKey))
+                            {
+                                if(subscription.getLabelsMap().get(label).equals(derivedName))
+                                {
+                                    listToRead.add(subscription.getName());
+                                    LOG.info("Added topic with LabelKey: %s - label: %s - subscription: %s  ", labelKey, derivedName, subscription.getName());
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        if (subscription.getName().contains(derivedName)) {
+                            listToRead.add(subscription.getName());
+                            LOG.info("Added subs: " + subscription.getName());
+                        }
                     }
                 }
                 LOG.info("Listed all the subscriptions in the project.");
@@ -268,7 +299,7 @@ public class PubsubToAvroPartitioned {
         // Create the pipeline
         Pipeline pipeline = Pipeline.create(options);
 
-        List<String> listTopicOrSubs = listTopicOrSubscriptions(options.getReadFromTopic().get(), options.getProjectId().get(), options.getDerivationName().get());
+        List<String> listTopicOrSubs = listTopicOrSubscriptions(options.getReadFromTopic().get(), options.getProjectId().get(), options.getDerivationName().get(), options.getLabelKey().get());
 
         if (listTopicOrSubs.size() == 0) {
             LOG.error("No Topics or Subscriptions");
