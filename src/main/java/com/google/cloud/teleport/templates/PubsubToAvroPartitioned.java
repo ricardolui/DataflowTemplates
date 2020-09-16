@@ -216,6 +216,19 @@ public class PubsubToAvroPartitioned {
                         listToRead.add(topic.getName());
                         LOG.info("Added topic: " + topic.getName());
                     }
+                    //Try to identify some labels with the naming also
+                    for(String topicLabel: topic.getLabelsMap().keySet())
+                    {
+                        if(topicLabel.equals("namespace"))
+                        {
+                            if(topic.getLabelsMap().get(topicLabel).contains(derivedName))
+                            {
+                                listToRead.add(topic.getName());
+                                LOG.info("Added topic with Labels: " + topic.getName());
+                            }
+                        }
+                    }
+
                 }
                 LOG.info("Listed all the subscriptions in the project.");
             } catch (IOException e) {
