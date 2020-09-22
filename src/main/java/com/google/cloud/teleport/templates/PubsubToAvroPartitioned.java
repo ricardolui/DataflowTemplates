@@ -38,6 +38,8 @@ import org.apache.beam.sdk.io.fs.ResourceId;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubIO;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubMessage;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubMessageWithAttributesCoder;
+import org.apache.beam.sdk.metrics.Counter;
+import org.apache.beam.sdk.metrics.Metrics;
 import org.apache.beam.sdk.options.Default;
 import org.apache.beam.sdk.options.Description;
 import org.apache.beam.sdk.options.PipelineOptions;
@@ -191,6 +193,11 @@ public class PubsubToAvroPartitioned {
         void setLabelKey(ValueProvider<String> labelKey);
 
 
+        @Description("Flag to Use Label Key")
+        @Required
+        ValueProvider<Boolean> getUseLabelKey();
+        void setUseLabelKey(ValueProvider<Boolean> useLabelKey);
+
 
     }
 
@@ -299,7 +306,17 @@ public class PubsubToAvroPartitioned {
         // Create the pipeline
         Pipeline pipeline = Pipeline.create(options);
 
-        List<String> listTopicOrSubs = listTopicOrSubscriptions(options.getReadFromTopic().get(), options.getProjectId().get(), options.getDerivationName().get(), options.getLabelKey().get());
+        String labelKey = null;
+        if(options.getUseLabelKey().get())
+        {
+            if(options.getLabelKey() != null && options.getLabelKey().get()!=null)
+            {
+                LOG.info("Using Label Key");
+                labelKey = options.getLabelKey().get();
+            }
+        }
+
+        List<String> listTopicOrSubs = listTopicOrSubscriptions(options.getReadFromTopic().get(), options.getProjectId().get(), options.getDerivationName().get(), labelKey);
 
         if (listTopicOrSubs.size() == 0) {
             LOG.error("No Topics or Subscriptions");
@@ -342,7 +359,7 @@ public class PubsubToAvroPartitioned {
                                     Boolean.TRUE))
                                     */
                                 .withWindowedWrites()
-                                .withNumShards(options.getNumShards()));
+                                .withNumShards(options.getNumShards()));`
 
 
         // Execute the pipeline and return the result.
@@ -357,6 +374,10 @@ public class PubsubToAvroPartitioned {
         @ProcessElement
         public void processElement(ProcessContext context) {
             KV<String, PubsubMessage> el = context.element();
+            String counterName = el.getKey().substring(el.getKey().lastIndexOf("/"));
+            //Example Custom counter, create namespace per subscription/topic
+            Counter counter = Metrics.counter(PubsubMessageToKVArchiveDoFn.class, counterName);
+            counter.inc();
             PubsubMessage message = el.getValue();
             context.output(new AvroPubsubMessageRecordPartitioned(message.getPayload(), message.getAttributeMap(), context.timestamp().getMillis(), el.getKey(), message.getMessageId()));
 
